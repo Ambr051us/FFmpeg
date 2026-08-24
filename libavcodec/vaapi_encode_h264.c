@@ -1068,6 +1068,7 @@ static av_cold int vaapi_encode_h264_close(AVCodecContext *avctx)
 static const AVOption vaapi_encode_h264_options[] = {
     HW_BASE_ENCODE_COMMON_OPTIONS,
     VAAPI_ENCODE_COMMON_OPTIONS,
+    VAAPI_ENCODE_INTRA_REFRESH_OPTION,
     VAAPI_ENCODE_RC_OPTIONS,
 
     { "qp", "Constant QP (for P-frames; scaled by qfactor/qoffset for I/B)",

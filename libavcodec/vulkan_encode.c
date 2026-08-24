@@ -173,6 +173,9 @@ static int vulkan_encode_issue(AVCodecContext *avctx,
 
     VkVideoReferenceSlotInfoKHR ref_slot[37];
     VkVideoEncodeInfoKHR encode_info;
+#ifdef VK_KHR_video_encode_intra_refresh
+    VkVideoEncodeIntraRefreshInfoKHR intra_refresh_info;
+#endif
 
     /* Create packet data buffer */
     max_pkt_size = FFALIGN(3 * ctx->base.surface_width * ctx->base.surface_height + (1 << 16),
@@ -272,6 +275,42 @@ static int vulkan_encode_issue(AVCodecContext *avctx,
                                       &encode_info);
     if (err < 0)
         return err;
+
+#ifdef VK_KHR_video_encode_intra_refresh
+    if (ctx->opts.intra_refresh_period > 0 &&
+        base_pic->type == FF_HW_PICTURE_TYPE_P) {
+        const uint32_t period = ctx->opts.intra_refresh_period;
+        const uint32_t index = ctx->intra_refresh_index;
+
+        if (encode_info.referenceSlotCount >
+            ctx->intra_refresh_caps.maxIntraRefreshActiveReferencePictures) {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Intra refresh frame uses %u references, but the device supports at most %u.\n",
+                   encode_info.referenceSlotCount,
+                   ctx->intra_refresh_caps.maxIntraRefreshActiveReferencePictures);
+            return AVERROR(ENOTSUP);
+        }
+
+        intra_refresh_info = (VkVideoEncodeIntraRefreshInfoKHR) {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INTRA_REFRESH_INFO_KHR,
+            .pNext = encode_info.pNext,
+            .intraRefreshCycleDuration = period,
+            .intraRefreshIndex = index,
+        };
+        encode_info.pNext = &intra_refresh_info;
+        encode_info.flags |= VK_VIDEO_ENCODE_INTRA_REFRESH_BIT_KHR;
+
+        vp->intra_refresh_ref = (VkVideoReferenceIntraRefreshInfoKHR) {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_REFERENCE_INTRA_REFRESH_INFO_KHR,
+            .pNext = vp->dpb_slot.pNext,
+            .dirtyIntraRefreshRegions = period - index - 1,
+        };
+        vp->dpb_slot.pNext = &vp->intra_refresh_ref;
+        ctx->intra_refresh_index = (index + 1) % period;
+    } else if (base_pic->type == FF_HW_PICTURE_TYPE_IDR) {
+        ctx->intra_refresh_index = 0;
+    }
+#endif
 
     encode_start = (VkVideoBeginCodingInfoKHR) {
         .sType = VK_STRUCTURE_TYPE_VIDEO_BEGIN_CODING_INFO_KHR,
@@ -761,6 +800,9 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
     VkVideoSessionCreateInfoKHR session_create = {
         .sType = VK_STRUCTURE_TYPE_VIDEO_SESSION_CREATE_INFO_KHR,
     };
+#ifdef VK_KHR_video_encode_intra_refresh
+    VkVideoEncodeSessionIntraRefreshCreateInfoKHR intra_refresh_create;
+#endif
     VkPhysicalDeviceVideoFormatInfoKHR fmt_info = {
         .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_FORMAT_INFO_KHR,
         .pNext = &ctx->profile_list,
@@ -848,7 +890,19 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
 
     /* Get the capabilities of the encoder for the given profile */
     ctx->enc_caps.sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_CAPABILITIES_KHR;
+#ifdef VK_KHR_video_encode_intra_refresh
+    if (s->extensions & FF_VK_EXT_VIDEO_ENCODE_INTRA_REFRESH) {
+        ctx->intra_refresh_caps = (VkVideoEncodeIntraRefreshCapabilitiesKHR) {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_INTRA_REFRESH_CAPABILITIES_KHR,
+            .pNext = codec_caps,
+        };
+        ctx->enc_caps.pNext = &ctx->intra_refresh_caps;
+    } else {
+        ctx->enc_caps.pNext = codec_caps;
+    }
+#else
     ctx->enc_caps.pNext = codec_caps;
+#endif
     ctx->caps.sType = VK_STRUCTURE_TYPE_VIDEO_CAPABILITIES_KHR;
     ctx->caps.pNext = &ctx->enc_caps;
 
@@ -872,6 +926,67 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
     } else if (ret != VK_SUCCESS) {
         return AVERROR_EXTERNAL;
     }
+
+#ifdef VK_KHR_video_encode_intra_refresh
+    if (ctx->opts.intra_refresh_period > 0) {
+        const char *mode_name;
+
+        if (!(s->extensions & FF_VK_EXT_VIDEO_ENCODE_INTRA_REFRESH)) {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Intra refresh requested, but the device does not support %s.\n",
+                   VK_KHR_VIDEO_ENCODE_INTRA_REFRESH_EXTENSION_NAME);
+            return AVERROR(ENOSYS);
+        }
+        if (ctx->opts.intra_refresh_period < 2 ||
+            ctx->opts.intra_refresh_period >
+                ctx->intra_refresh_caps.maxIntraRefreshCycleDuration) {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Invalid intra refresh period %d; device range is 2 to %u.\n",
+                   ctx->opts.intra_refresh_period,
+                   ctx->intra_refresh_caps.maxIntraRefreshCycleDuration);
+            return AVERROR(EINVAL);
+        }
+        if (!ctx->intra_refresh_caps.maxIntraRefreshActiveReferencePictures) {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Device cannot use an active reference picture during intra refresh.\n");
+            return AVERROR(ENOTSUP);
+        }
+
+        if (ctx->intra_refresh_caps.intraRefreshModes &
+            VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR) {
+            ctx->intra_refresh_mode =
+                VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_COLUMN_BASED_BIT_KHR;
+            mode_name = "block-column";
+        } else if (ctx->intra_refresh_caps.intraRefreshModes &
+                   VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR) {
+            ctx->intra_refresh_mode =
+                VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_ROW_BASED_BIT_KHR;
+            mode_name = "block-row";
+        } else if (ctx->intra_refresh_caps.intraRefreshModes &
+                   VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR) {
+            ctx->intra_refresh_mode =
+                VK_VIDEO_ENCODE_INTRA_REFRESH_MODE_BLOCK_BASED_BIT_KHR;
+            mode_name = "block";
+        } else {
+            av_log(avctx, AV_LOG_ERROR,
+                   "Device has no block-based intra refresh mode (modes 0x%x).\n",
+                   ctx->intra_refresh_caps.intraRefreshModes);
+            return AVERROR(ENOTSUP);
+        }
+
+        av_log(avctx, AV_LOG_VERBOSE,
+               "Intra refresh: %s mode, period %d, maximum period %u, maximum references %u.\n",
+               mode_name, ctx->opts.intra_refresh_period,
+               ctx->intra_refresh_caps.maxIntraRefreshCycleDuration,
+               ctx->intra_refresh_caps.maxIntraRefreshActiveReferencePictures);
+    }
+#else
+    if (ctx->opts.intra_refresh_period > 0) {
+        av_log(avctx, AV_LOG_ERROR,
+               "Intra refresh requested, but FFmpeg was built with older Vulkan headers.\n");
+        return AVERROR(ENOSYS);
+    }
+#endif
 
     if ((ctx->enc_caps.supportedEncodeFeedbackFlags & feedback_flags) !=
         feedback_flags) {
@@ -1045,6 +1160,17 @@ av_cold int ff_vulkan_encode_init(AVCodecContext *avctx, FFVulkanEncodeContext *
     session_create.pictureFormat = ctx->pic_format;
     session_create.referencePictureFormat = session_create.pictureFormat;
     session_create.pStdHeaderVersion = &vk_desc->ext_props;
+
+#ifdef VK_KHR_video_encode_intra_refresh
+    if (ctx->opts.intra_refresh_period > 0) {
+        intra_refresh_create = (VkVideoEncodeSessionIntraRefreshCreateInfoKHR) {
+            .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_SESSION_INTRA_REFRESH_CREATE_INFO_KHR,
+            .pNext = session_create.pNext,
+            .intraRefreshMode = ctx->intra_refresh_mode,
+        };
+        session_create.pNext = &intra_refresh_create;
+    }
+#endif
 
     err = ff_vk_video_common_init(avctx, s, &ctx->common, &session_create);
     if (err < 0)

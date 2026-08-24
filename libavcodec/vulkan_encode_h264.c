@@ -134,8 +134,19 @@ static int init_pic_rc(AVCodecContext *avctx, FFHWBaseEncodePicture *pic,
     rc_info->pNext = &hp->vkrc_info;
 
     if (rc_info->rateControlMode > VK_VIDEO_ENCODE_RATE_CONTROL_MODE_DISABLED_BIT_KHR) {
-        rc_info->virtualBufferSizeInMs = (enc->unit_opts.hrd_buffer_size * 1000LL) / avctx->bit_rate;
-        rc_info->initialVirtualBufferSizeInMs = (enc->unit_opts.initial_buffer_fullness * 1000LL) / avctx->bit_rate;
+        uint32_t max_frame_size = 0;
+
+        if (ctx->opts.strict_frame_size) {
+            max_frame_size = av_clip64(av_rescale_rnd(avctx->bit_rate, avctx->framerate.den,
+                                                      8LL * avctx->framerate.num, AV_ROUND_UP),
+                                       1, UINT32_MAX);
+            rc_info->virtualBufferSizeInMs = av_rescale_rnd(1000, avctx->framerate.den,
+                                                            avctx->framerate.num, AV_ROUND_UP);
+            rc_info->initialVirtualBufferSizeInMs = rc_info->virtualBufferSizeInMs;
+        } else {
+            rc_info->virtualBufferSizeInMs = (enc->unit_opts.hrd_buffer_size * 1000LL) / avctx->bit_rate;
+            rc_info->initialVirtualBufferSizeInMs = (enc->unit_opts.initial_buffer_fullness * 1000LL) / avctx->bit_rate;
+        }
 
         hp->vkrc_layer_info = (VkVideoEncodeH264RateControlLayerInfoKHR) {
             .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_H264_RATE_CONTROL_LAYER_INFO_KHR,
@@ -150,7 +161,12 @@ static int init_pic_rc(AVCodecContext *avctx, FFHWBaseEncodePicture *pic,
             .maxQp.qpP = avctx->qmax > 0 ? avctx->qmax : 0,
             .maxQp.qpB = avctx->qmax > 0 ? avctx->qmax : 0,
 
-            .useMaxFrameSize = 0,
+            .useMaxFrameSize = ctx->opts.strict_frame_size,
+            .maxFrameSize = {
+                .frameISize = max_frame_size,
+                .framePSize = max_frame_size,
+                .frameBSize = max_frame_size,
+            },
         };
         rc_layer->pNext = &hp->vkrc_layer_info;
         hp->vkrc_info.temporalLayerCount = 1;
@@ -1570,6 +1586,7 @@ static av_cold int vulkan_encode_h264_close(AVCodecContext *avctx)
 static const AVOption vulkan_encode_h264_options[] = {
     HW_BASE_ENCODE_COMMON_OPTIONS,
     VULKAN_ENCODE_COMMON_OPTIONS,
+    VULKAN_ENCODE_H26X_OPTIONS,
 
     { "profile", "Set profile (profile_idc and constraint_set*_flag)",
       OFFSET(common.opts.profile), AV_OPT_TYPE_INT,

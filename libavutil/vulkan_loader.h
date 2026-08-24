@@ -96,6 +96,9 @@ static inline uint64_t ff_vk_extensions_to_mask(const char * const *extensions,
 #ifdef VK_KHR_video_encode_av1
         { VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME,          FF_VK_EXT_VIDEO_ENCODE_AV1       },
 #endif
+#ifdef VK_KHR_video_encode_intra_refresh
+        { VK_KHR_VIDEO_ENCODE_INTRA_REFRESH_EXTENSION_NAME, FF_VK_EXT_VIDEO_ENCODE_INTRA_REFRESH },
+#endif
     };
 
     FFVulkanExtensions mask = 0x0;

@@ -109,6 +109,9 @@ typedef struct VulkanDeviceFeatures {
 #ifdef VK_KHR_video_encode_av1
     VkPhysicalDeviceVideoEncodeAV1FeaturesKHR av1_encode;
 #endif
+#ifdef VK_KHR_video_encode_intra_refresh
+    VkPhysicalDeviceVideoEncodeIntraRefreshFeaturesKHR encode_intra_refresh;
+#endif
 
     VkPhysicalDeviceShaderObjectFeaturesEXT shader_object;
     VkPhysicalDeviceCooperativeMatrixFeaturesKHR cooperative_matrix;
@@ -268,6 +271,10 @@ static void device_features_init(AVHWDeviceContext *ctx, VulkanDeviceFeatures *f
     FF_VK_STRUCT_EXT(s, &feats->device, &feats->av1_encode, FF_VK_EXT_VIDEO_ENCODE_AV1,
                      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_AV1_FEATURES_KHR);
 #endif
+#ifdef VK_KHR_video_encode_intra_refresh
+    FF_VK_STRUCT_EXT(s, &feats->device, &feats->encode_intra_refresh, FF_VK_EXT_VIDEO_ENCODE_INTRA_REFRESH,
+                     VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VIDEO_ENCODE_INTRA_REFRESH_FEATURES_KHR);
+#endif
 
     FF_VK_STRUCT_EXT(s, &feats->device, &feats->shader_object, FF_VK_EXT_SHADER_OBJECT,
                      VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT);
@@ -365,6 +372,9 @@ static void device_features_copy_needed(VulkanDeviceFeatures *dst, VulkanDeviceF
 
 #ifdef VK_KHR_video_encode_av1
     COPY_VAL(av1_encode.videoEncodeAV1);
+#endif
+#ifdef VK_KHR_video_encode_intra_refresh
+    COPY_VAL(encode_intra_refresh.videoEncodeIntraRefresh);
 #endif
 
     COPY_VAL(shader_object.shaderObject);
@@ -732,6 +742,9 @@ static const VulkanOptExtension optional_device_exts[] = {
 #endif
 #ifdef VK_KHR_video_encode_av1
     { VK_KHR_VIDEO_ENCODE_AV1_EXTENSION_NAME,                 FF_VK_EXT_VIDEO_ENCODE_AV1       },
+#endif
+#ifdef VK_KHR_video_encode_intra_refresh
+    { VK_KHR_VIDEO_ENCODE_INTRA_REFRESH_EXTENSION_NAME,       FF_VK_EXT_VIDEO_ENCODE_INTRA_REFRESH },
 #endif
     { VK_KHR_VIDEO_DECODE_AV1_EXTENSION_NAME,                 FF_VK_EXT_VIDEO_DECODE_AV1       },
 };

@@ -40,6 +40,9 @@ typedef struct FFVulkanEncodePicture {
     FFHWBaseEncodePicture  base;
     VkVideoPictureResourceInfoKHR dpb_res;
     VkVideoReferenceSlotInfoKHR dpb_slot;
+#ifdef VK_KHR_video_encode_intra_refresh
+    VkVideoReferenceIntraRefreshInfoKHR intra_refresh_ref;
+#endif
 
     struct {
         VkImageView        view;
@@ -158,6 +161,8 @@ typedef struct FFVkEncodeCommonOptions {
     int level;
     int tier;
     int async_depth;
+    int intra_refresh_period;
+    int strict_frame_size;
     VkVideoEncodeUsageFlagBitsKHR usage;
     VkVideoEncodeContentFlagBitsKHR content;
     VkVideoEncodeTuningModeKHR tune;
@@ -190,6 +195,11 @@ typedef struct FFVulkanEncodeContext {
     VkVideoCapabilitiesKHR caps;
     VkVideoEncodeQualityLevelPropertiesKHR quality_props;
     VkVideoEncodeCapabilitiesKHR enc_caps;
+#ifdef VK_KHR_video_encode_intra_refresh
+    VkVideoEncodeIntraRefreshCapabilitiesKHR intra_refresh_caps;
+    VkVideoEncodeIntraRefreshModeFlagBitsKHR intra_refresh_mode;
+    uint32_t intra_refresh_index;
+#endif
     VkVideoEncodeUsageInfoKHR usage_info;
 
     AVVulkanDeviceQueueFamily *qf_enc;
@@ -227,6 +237,10 @@ typedef struct FFVulkanEncodeContext {
         { "camera",   "Camera footage", 0, AV_OPT_TYPE_CONST, { .i64 = VK_VIDEO_ENCODE_CONTENT_CAMERA_BIT_KHR   }, INT_MIN, INT_MAX, FLAGS, "content" }, \
         { "desktop",  "Screen recording", 0, AV_OPT_TYPE_CONST, { .i64 = VK_VIDEO_ENCODE_CONTENT_DESKTOP_BIT_KHR  }, INT_MIN, INT_MAX, FLAGS, "content" }, \
         { "rendered", "Game or 3D content", 0, AV_OPT_TYPE_CONST, { .i64 = VK_VIDEO_ENCODE_CONTENT_RENDERED_BIT_KHR }, INT_MIN, INT_MAX, FLAGS, "content" }
+
+#define VULKAN_ENCODE_H26X_OPTIONS \
+    { "intra_refresh_period", "Number of P-frames in a continuous intra-refresh cycle (0 disables)", OFFSET(common.opts.intra_refresh_period), AV_OPT_TYPE_INT, { .i64 = 0 }, 0, 65535, FLAGS }, \
+    { "strict_frame_size", "Limit every encoded frame to one frame's share of the current target bitrate", OFFSET(common.opts.strict_frame_size), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, FLAGS }
 
 /**
  * Initialize encoder.

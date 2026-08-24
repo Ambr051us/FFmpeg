@@ -383,6 +383,37 @@ static int vaapi_encode_issue(AVCodecContext *avctx,
     }
 #endif
 
+#if VA_CHECK_VERSION(1, 0, 0)
+    if (ctx->intra_refresh_period) {
+        if (base_pic->type == FF_HW_PICTURE_TYPE_IDR) {
+            ctx->intra_refresh_position = 0;
+        } else if (base_pic->type == FF_HW_PICTURE_TYPE_P) {
+            VAEncMiscParameterRIR param_rir = { 0 };
+
+            if (ctx->intra_refresh_column)
+                param_rir.rir_flags.bits.enable_rir_column = 1;
+            else
+                param_rir.rir_flags.bits.enable_rir_row = 1;
+
+            param_rir.intra_insertion_location =
+                ctx->intra_refresh_position;
+            param_rir.intra_insert_size = FFMIN(
+                ctx->intra_refresh_unit_size,
+                ctx->intra_refresh_unit_count - ctx->intra_refresh_position);
+
+            err = vaapi_encode_make_misc_param_buffer(
+                avctx, pic, VAEncMiscParameterTypeRIR,
+                &param_rir, sizeof(param_rir));
+            if (err < 0)
+                goto fail;
+
+            ctx->intra_refresh_position += param_rir.intra_insert_size;
+            if (ctx->intra_refresh_position >= ctx->intra_refresh_unit_count)
+                ctx->intra_refresh_position = 0;
+        }
+    }
+#endif
+
     if (base_pic->type == FF_HW_PICTURE_TYPE_IDR) {
         if (ctx->va_packed_headers & VA_ENC_PACKED_HEADER_SEQUENCE &&
             ctx->codec->write_sequence_header) {
@@ -1912,6 +1943,70 @@ static av_cold int vaapi_encode_init_slice_structure(AVCodecContext *avctx)
     return 0;
 }
 
+static av_cold int vaapi_encode_init_intra_refresh(AVCodecContext *avctx)
+{
+#if VA_CHECK_VERSION(1, 0, 0)
+    VAAPIEncodeContext *ctx = avctx->priv_data;
+    VAConfigAttrib attr = { VAConfigAttribEncIntraRefresh };
+    VAStatus vas;
+    uint32_t modes;
+
+    if (!ctx->intra_refresh_period)
+        return 0;
+
+    vas = vaGetConfigAttributes(ctx->hwctx->display,
+                                ctx->va_profile,
+                                ctx->va_entrypoint,
+                                &attr, 1);
+    if (vas != VA_STATUS_SUCCESS) {
+        av_log(avctx, AV_LOG_ERROR, "Failed to query intra-refresh "
+               "attribute: %d (%s).\n", vas, vaErrorStr(vas));
+        return AVERROR_EXTERNAL;
+    }
+
+    modes = attr.value;
+    if (modes == VA_ATTRIB_NOT_SUPPORTED ||
+        !(modes & VA_ENC_INTRA_REFRESH_P_FRAME) ||
+        !(modes & (VA_ENC_INTRA_REFRESH_ROLLING_COLUMN |
+                   VA_ENC_INTRA_REFRESH_ROLLING_ROW))) {
+        av_log(avctx, AV_LOG_ERROR, "Driver does not support rolling "
+               "intra refresh on P-frames (reported modes %#x).\n", modes);
+        return AVERROR(ENOSYS);
+    }
+
+    if ((modes & VA_ENC_INTRA_REFRESH_ROLLING_COLUMN) &&
+        (!(modes & VA_ENC_INTRA_REFRESH_ROLLING_ROW) ||
+         ctx->slice_block_cols >= ctx->slice_block_rows)) {
+        ctx->intra_refresh_column = 1;
+        ctx->intra_refresh_unit_count = ctx->slice_block_cols;
+    } else {
+        ctx->intra_refresh_column = 0;
+        ctx->intra_refresh_unit_count = ctx->slice_block_rows;
+    }
+
+    ctx->intra_refresh_unit_size =
+        (ctx->intra_refresh_unit_count + ctx->intra_refresh_period - 1) /
+        ctx->intra_refresh_period;
+    ctx->intra_refresh_effective_period =
+        (ctx->intra_refresh_unit_count + ctx->intra_refresh_unit_size - 1) /
+        ctx->intra_refresh_unit_size;
+    ctx->intra_refresh_position = 0;
+
+    av_log(avctx, AV_LOG_VERBOSE,
+           "Rolling intra refresh: %d %s per P-frame, effective period "
+           "%d frames (requested %d, driver modes %#x).\n",
+           ctx->intra_refresh_unit_size,
+           ctx->intra_refresh_column ? "column(s)" : "row(s)",
+           ctx->intra_refresh_effective_period,
+           ctx->intra_refresh_period, modes);
+    return 0;
+#else
+    av_log(avctx, AV_LOG_ERROR, "Rolling intra refresh is not supported "
+           "with this VAAPI version.\n");
+    return AVERROR(ENOSYS);
+#endif
+}
+
 static av_cold int vaapi_encode_init_packed_headers(AVCodecContext *avctx)
 {
     VAAPIEncodeContext *ctx = avctx->priv_data;
@@ -2204,6 +2299,10 @@ av_cold int ff_vaapi_encode_init(AVCodecContext *avctx)
         goto fail;
 
     err = vaapi_encode_init_slice_structure(avctx);
+    if (err < 0)
+        goto fail;
+
+    err = vaapi_encode_init_intra_refresh(avctx);
     if (err < 0)
         goto fail;
 

@@ -158,6 +158,10 @@ typedef struct VAAPIEncodeContext {
     // Block Level based bitrate control.
     int             blbrc;
 
+    // Number of P-frames over which a full rolling intra-refresh pass is
+    // requested. Zero disables rolling intra refresh.
+    int             intra_refresh_period;
+
     // Explicitly-set QP, for use with the "qp" options.
     // (Forces CQP mode when set, overriding everything else.)
     int             explicit_qp;
@@ -228,6 +232,13 @@ typedef struct VAAPIEncodeContext {
     int slice_block_cols;
     int nb_slices;
     int slice_size;
+
+    // Rolling intra refresh state.
+    int intra_refresh_column;
+    int intra_refresh_unit_count;
+    int intra_refresh_unit_size;
+    int intra_refresh_position;
+    int intra_refresh_effective_period;
 
     // Tile encoding.
     int tile_cols;
@@ -357,6 +368,12 @@ int ff_vaapi_encode_close(AVCodecContext *avctx);
       "Maximum frame size (in bytes)",\
       OFFSET(common.max_frame_size), AV_OPT_TYPE_INT, \
       { .i64 = 0 }, 0, INT_MAX / 8, FLAGS }
+
+#define VAAPI_ENCODE_INTRA_REFRESH_OPTION \
+    { "intra_refresh_period", \
+      "Number of P-frames in a rolling intra-refresh pass (0 disables)", \
+      OFFSET(common.intra_refresh_period), AV_OPT_TYPE_INT, \
+      { .i64 = 0 }, 0, UINT16_MAX, FLAGS }
 
 #define VAAPI_ENCODE_RC_MODE(name, desc) \
     { #name, desc, 0, AV_OPT_TYPE_CONST, { .i64 = RC_MODE_ ## name }, \

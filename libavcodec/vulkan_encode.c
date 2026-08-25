@@ -196,6 +196,15 @@ static int vulkan_encode_issue(AVCodecContext *avctx,
     if (err < 0)
         return err;
 
+    int rc_changed =
+        ctx->session_reset &&
+        ctx->active_rc_mode != rc_info.rateControlMode;
+    if (ctx->session_reset && rc_info.layerCount)
+        rc_changed |= ctx->active_rc_average_bitrate != rc_layer.averageBitrate ||
+                      ctx->active_rc_max_bitrate != rc_layer.maxBitrate ||
+                      ctx->active_rc_framerate_num != rc_layer.frameRateNumerator ||
+                      ctx->active_rc_framerate_den != rc_layer.frameRateDenominator;
+
     q_info = (VkVideoEncodeQualityLevelInfoKHR) {
         .sType = VK_STRUCTURE_TYPE_VIDEO_ENCODE_QUALITY_LEVEL_INFO_KHR,
         .pNext = &rc_info,
@@ -203,10 +212,10 @@ static int vulkan_encode_issue(AVCodecContext *avctx,
     };
     encode_ctrl = (VkVideoCodingControlInfoKHR) {
         .sType = VK_STRUCTURE_TYPE_VIDEO_CODING_CONTROL_INFO_KHR,
-        .pNext = &q_info,
-        .flags = VK_VIDEO_CODING_CONTROL_ENCODE_QUALITY_LEVEL_BIT_KHR |
-                 VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR |
-                 VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR,
+        .pNext = ctx->session_reset ? (void *)&rc_info : (void *)&q_info,
+        .flags = VK_VIDEO_CODING_CONTROL_ENCODE_RATE_CONTROL_BIT_KHR |
+                 (!ctx->session_reset ? VK_VIDEO_CODING_CONTROL_ENCODE_QUALITY_LEVEL_BIT_KHR |
+                                        VK_VIDEO_CODING_CONTROL_RESET_BIT_KHR : 0),
     };
 
     for (int i = 0; i < ctx->caps.maxDpbSlots; i++) {
@@ -455,9 +464,21 @@ static int vulkan_encode_issue(AVCodecContext *avctx,
     vk->CmdBeginVideoCodingKHR(cmd_buf, &encode_start);
 
     /* Send control data */
-    if (!ctx->session_reset) {
+    if (!ctx->session_reset || rc_changed) {
         vk->CmdControlVideoCodingKHR(cmd_buf, &encode_ctrl);
-        ctx->session_reset++;
+        ctx->session_reset = 1;
+        ctx->active_rc_mode = rc_info.rateControlMode;
+        if (rc_info.layerCount) {
+            ctx->active_rc_average_bitrate = rc_layer.averageBitrate;
+            ctx->active_rc_max_bitrate = rc_layer.maxBitrate;
+            ctx->active_rc_framerate_num = rc_layer.frameRateNumerator;
+            ctx->active_rc_framerate_den = rc_layer.frameRateDenominator;
+        } else {
+            ctx->active_rc_average_bitrate = 0;
+            ctx->active_rc_max_bitrate = 0;
+            ctx->active_rc_framerate_num = 0;
+            ctx->active_rc_framerate_den = 0;
+        }
     }
 
     /* Encode */

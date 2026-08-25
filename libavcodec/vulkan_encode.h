@@ -180,6 +180,11 @@ typedef struct FFVulkanEncodeContext {
     int explicit_qp;
     int session_reset;
 
+    VkVideoEncodeRateControlModeFlagBitsKHR active_rc_mode;
+    uint64_t active_rc_average_bitrate;
+    uint64_t active_rc_max_bitrate;
+    uint32_t active_rc_framerate_num;
+    uint32_t active_rc_framerate_den;
     /* Session parameters object, initialized by each codec independently
      * and set here. */
     VkVideoSessionParametersKHR session_params;
